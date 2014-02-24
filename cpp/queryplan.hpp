@@ -17,6 +17,7 @@
 #endif
 
 
+#include <chrono>
 #include <ctime>
 #include <iostream>
 #include <functional>
@@ -37,10 +38,6 @@
 
 #ifndef QP_ENABLE_TIMING
 #define QP_ENABLE_TIMING    0
-#endif
-
-#if QP_ENABLE_TIMING
-#include <boost/chrono.hpp>
 #endif
 
 #ifndef QP_TRACER
@@ -190,15 +187,16 @@ public:
     << boost::any_cast<QP_ARG_TYPE(arg)>(QP_ANY_NAME(arg))
 
 #define QP_BEGIN_TIMING()                   \
-    auto wallclock_t0 = boost::chrono::high_resolution_clock::now();    \
+    auto wallclock_t0 = std::chrono::high_resolution_clock::now();      \
     auto realclock_t0 = std::clock();
 
 #define QP_END_TIMING(name)                 \
     auto realclock_t1 = std::clock();                                   \
-    auto wallclock_t1 = boost::chrono::high_resolution_clock::now();    \
+    auto wallclock_t1 = std::chrono::high_resolution_clock::now();      \
     QP_TRACER << id_ << "(" #name ") spent "                            \
-        << boost::chrono::duration_cast<boost::chrono::microseconds>(   \
-            wallclock_t1 - wallclock_t0) << "(wall) "                   \
+        << std::chrono::duration_cast<std::chrono::microseconds>(       \
+            wallclock_t1 - wallclock_t0).count()                        \
+        << " microseconds(wall) "                                       \
         << (long long)(1000000.0 * (realclock_t1 - realclock_t0)        \
             / CLOCKS_PER_SEC) << " microseconds(real)\n";
 
