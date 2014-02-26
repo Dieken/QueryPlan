@@ -10,7 +10,7 @@ my $only = 0;
 GetOptions('only!'      => \$only);
 
 while (<STDIN>) {
-    if (/^\s*class\s(?:$re)\s/) {
+    if (/\s*class\s(?:$re)\s/) {
         # break line after "{" and ";"
         s/[{;]\s/$&\n/g;
 

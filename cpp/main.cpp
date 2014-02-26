@@ -8,23 +8,27 @@
 using namespace std;
 using namespace boost;
 
-QP_MODULE(MyModule,
-        ((QP_IN, int, a))
-        ((QP_IN, int, b))
-        ((QP_OUT, int&, c, 0))
-);
+namespace queryplan {
+    template<typename... C>
+    ModuleFactoryRegistry<C...>& getModuleFactoryRegistry() {
+        static ModuleFactoryRegistry<C...> registry;
+
+        return registry;
+    }
+}
 
 void f(int a, int b, int& c) {
     c = a + b;
 }
 
-int main(int argc, char** argv)
+QP_MODULE(MyModule, "MyModule", decltype(&f),
+        ((QP_IN, int, a))
+        ((QP_IN, int, b))
+        ((QP_OUT, int&, c, 0))
+        , decltype(f));
+
+void runModule(queryplan::Module& m)
 {
-    (void)argc;
-    (void)argv;
-
-    MyModule m(f, "add");
-
     map<string, int> keys;
     keys["a"] = 0;
     keys["b"] = 1;
@@ -53,11 +57,46 @@ int main(int argc, char** argv)
     }
 
     cout << any_cast<int>(args[0]) << ' ' << any_cast<int>(args[1]) << ' ' << any_cast<int>(args[2]) << "\n";
+}
 
-    auto& v = m.info();
+void dumpModuleInfo(const vector<queryplan::ArgInfo>& v)
+{
     for (auto a : v) {
         cout << "(" << a.flag() << ", " << a.type() << ", " << a.name() << ", " << a.value() << ", " << a.typeinfo().name() << ")\n";
     }
+}
+
+void testDefineModule()
+{
+    cout << __func__ << ":\n";
+
+    MyModule<decltype(f)> m("add", f);
+
+    runModule(m);
+    dumpModuleInfo(m.info());
+}
+
+void testRegisterModule()
+{
+    cout << __func__ << ":\n";
+
+    auto factory = queryplan::getModuleFactoryRegistry<decltype(f)>().find("MyModule");
+    auto m = factory->create("add", f);
+
+    runModule(*m);
+    dumpModuleInfo(factory->info());
+
+    delete m;
+}
+
+int main(int argc, char** argv)
+{
+    (void)argc;
+    (void)argv;
+
+    testDefineModule();
+    cout << "\n";
+    testRegisterModule();
 
     return 0;
 }

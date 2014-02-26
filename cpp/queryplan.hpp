@@ -20,10 +20,12 @@
 #include <chrono>
 #include <ctime>
 #include <iostream>
-#include <functional>
 #include <map>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <typeinfo>
+#include <utility>
 #include <vector>
 #include <boost/any.hpp>
 #include <boost/preprocessor.hpp>
@@ -73,53 +75,126 @@ class Module {
 public:
     virtual void resolve(const std::map<std::string, int>& m) = 0;
     virtual void run(std::vector<boost::any>& v) = 0;
-    virtual const std::vector<queryplan::ArgInfo>& info() const = 0;
     virtual const std::string& id() const = 0;
+    virtual ~Module() {}
 };
 
-#define QP_MODULE(name, args)               \
-    class name : public queryplan::Module { \
-    public:                                 \
-        QP_DECLARE_FUNCTOR_TYPE(args)       \
-        name() : id_(#name) {}              \
-        name(const std::string& id) :       \
-            id_(id) {}                      \
-        name(FunctorType func) :            \
-            id_(#name), func_(func) {}      \
-        name(FunctorType func,              \
-             const std::string& id) :       \
-                id_(id), func_(func) {}     \
-        QP_DECLARE_RESOLVE(args)            \
-        QP_DECLARE_RUN(name, args)          \
-        QP_DECLARE_MODULE_INFO(args)        \
-        const std::string& id() const {     \
-            return id_;                     \
-        }                                   \
-        const FunctorType& functor()        \
-            const { return func_; }         \
-    private:                                \
-        const std::string id_;              \
-        const FunctorType func_;            \
-        QP_DECLARE_INDEXES(args)            \
+
+template<typename... C>
+class ModuleFactory {
+public:
+    virtual Module* create(const std::string& id, C... c) const = 0;
+    virtual const std::vector<ArgInfo>& info() const = 0;
+    virtual ~ModuleFactory() {}
+};
+
+
+template<typename ModuleT, typename... C>
+class ConcreteModuleFactory : public ModuleFactory<C...> {
+public:
+    Module* create(const std::string& id, C... c) const {
+        return new ModuleT(id, c...);
+    }
+
+    const std::vector<ArgInfo>& info() const {
+        return ModuleT::info();
+    }
+};
+
+
+template<typename... C>
+class ModuleFactoryRegistry {
+public:
+    const ModuleFactory<C...>* find(const std::string& name) const {
+        std::lock_guard<std::mutex> lock(m);
+
+        auto it = factories.find(name);
+        if (it != factories.end()) {
+            return it->second;
+        } else {
+            std::string msg = "module \"" + name + "\" not found";
+            throw std::invalid_argument(msg);
+        }
+    }
+
+    void insert(const std::string& name,
+                       ModuleFactory<C...>* factory) {
+        std::lock_guard<std::mutex> lock(m);
+
+        if (! factories.insert(std::make_pair(name, factory)).second) {
+            std::string msg = "module \"" + name + "\" is already registered";
+            throw std::runtime_error(msg);
+        }
+    }
+
+    std::map<std::string, ModuleFactory<C...>*> all() {
+        std::lock_guard<std::mutex> lock(m);
+
+        return std::map<std::string, ModuleFactory<C...>*>(factories);
+    }
+
+private:
+    std::map<std::string, ModuleFactory<C...>*> factories;
+    mutable std::mutex m;       // C++11 doesn't have shared_mutex
+};
+
+
+template<typename... C>
+extern ModuleFactoryRegistry<C...>& getModuleFactoryRegistry();
+
+
+template<typename ModuleT, typename... C>
+class ModuleFactoryRegister {
+public:
+    ModuleFactoryRegister(const std::string& name) {
+        getModuleFactoryRegistry<C...>().insert(name, &factory);
+    }
+
+private:
+    ConcreteModuleFactory<ModuleT, C...> factory;
+};
+
+
+
+#define QP_MODULE(module, name, functorType, args, ...)     \
+    QP_DEFINE_MODULE(module, functorType, args);            \
+    QP_REGISTER_MODULE(module, name, ##__VA_ARGS__)
+
+
+
+#define QP_DEFINE_MODULE(module, functorType, args) \
+    template<typename... C>                         \
+    class module : public queryplan::Module {       \
+    public:                                         \
+        module(const std::string& id,               \
+             C... c) :                              \
+            id_(id), func_(c...) {}                 \
+        QP_DECLARE_RESOLVE(args)                    \
+        QP_DECLARE_RUN(module, args)                \
+        QP_DECLARE_MODULE_INFO(args)                \
+        const std::string& id() const {             \
+            return id_;                             \
+        }                                           \
+        const functorType& functor()                \
+            const { return func_; }                 \
+    private:                                        \
+        const std::string id_;                      \
+        const functorType func_;                    \
+        QP_DECLARE_INDEXES(args)                    \
     }
 
 
 
-#define QP_DECLARE_FUNCTOR_TYPE(args)       \
-    typedef std::function<void(             \
-        BOOST_PP_SEQ_ENUM(                  \
-            BOOST_PP_SEQ_TRANSFORM(         \
-                QP_TRANS_TYPE, 0, args)))>  \
-        FunctorType;
-
-#define QP_TRANS_TYPE(s, data, arg)         \
-    QP_ARG_TYPE(arg)
+#define QP_REGISTER_MODULE(module, name, ...)       \
+    static queryplan::ModuleFactoryRegister<        \
+        module<__VA_ARGS__>, ##__VA_ARGS__>         \
+            module##FactoryRegisterInstance(name)
 
 
 
 #define QP_DECLARE_MODULE_INFO(args)        \
-    const                                                   \
-        std::vector<queryplan::ArgInfo>& info() const {     \
+    static const                                            \
+        std::vector<queryplan::ArgInfo>& info() {           \
             static const std::vector<queryplan::ArgInfo>    \
                 v({ QP_MODULE_INFO(args) });                \
         return v;                                           \
@@ -150,19 +225,19 @@ public:
 
 
 
-#define QP_DECLARE_RUN(name, args)          \
+#define QP_DECLARE_RUN(module, args)        \
     void run(std::vector<boost::any>& v) {                          \
         BOOST_PP_SEQ_FOR_EACH(QP_ASSIGN_VALUE, 0, args)             \
         BOOST_PP_EXPR_IF(                                           \
-            QP_ENABLE_TRACE, QP_TRACE(name, args, ">"))             \
+            QP_ENABLE_TRACE, QP_TRACE(module, args, ">"))           \
         BOOST_PP_EXPR_IF(                                           \
             QP_ENABLE_TIMING, QP_BEGIN_TIMING())                    \
         func_(BOOST_PP_SEQ_ENUM(                                    \
             BOOST_PP_SEQ_TRANSFORM(QP_TRANS_TYPE_NAME, 0, args)));  \
         BOOST_PP_EXPR_IF(                                           \
-            QP_ENABLE_TIMING, QP_END_TIMING(name))                  \
+            QP_ENABLE_TIMING, QP_END_TIMING(module))                \
         BOOST_PP_EXPR_IF(                                           \
-            QP_ENABLE_TRACE, QP_TRACE(name, args, "<"))             \
+            QP_ENABLE_TRACE, QP_TRACE(module, args, "<"))           \
     }
 
 #define QP_ASSIGN_VALUE(r, data, arg)       \
@@ -176,8 +251,8 @@ public:
 #define QP_ANY_NAME(arg)                    \
     BOOST_PP_SEQ_CAT((QP_ARG_NAME(arg)) (_any))
 
-#define QP_TRACE(name, args, state)         \
-    QP_TRACER << id_ << "(" #name ") " state    \
+#define QP_TRACE(module, args, state)       \
+    QP_TRACER << id_ << "(" #module ") " state  \
         BOOST_PP_SEQ_FOR_EACH(                  \
             QP_TRACE_ARG, 0, args)              \
         << "\n";
@@ -190,10 +265,10 @@ public:
     auto wallclock_t0 = std::chrono::high_resolution_clock::now();      \
     auto realclock_t0 = std::clock();
 
-#define QP_END_TIMING(name)                 \
+#define QP_END_TIMING(module)               \
     auto realclock_t1 = std::clock();                                   \
     auto wallclock_t1 = std::chrono::high_resolution_clock::now();      \
-    QP_TRACER << id_ << "(" #name ") spent "                            \
+    QP_TRACER << id_ << "(" #module ") spent "                          \
         << std::chrono::duration_cast<std::chrono::microseconds>(       \
             wallclock_t1 - wallclock_t0).count()                        \
         << " microseconds(wall) "                                       \
