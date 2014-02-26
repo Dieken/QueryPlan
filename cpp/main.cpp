@@ -8,14 +8,6 @@
 using namespace std;
 using namespace boost;
 
-namespace queryplan {
-    template<typename... C>
-    ModuleFactoryRegistry<C...>& getModuleFactoryRegistry() {
-        static ModuleFactoryRegistry<C...> registry;
-
-        return registry;
-    }
-}
 
 void f(int a, int b, int& c) {
     c = a + b;

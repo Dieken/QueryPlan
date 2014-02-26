@@ -140,7 +140,11 @@ private:
 
 
 template<typename... C>
-extern ModuleFactoryRegistry<C...>& getModuleFactoryRegistry();
+ModuleFactoryRegistry<C...>& getModuleFactoryRegistry() {
+    static ModuleFactoryRegistry<C...> registry;
+
+    return registry;
+}
 
 
 template<typename ModuleT, typename... C>
@@ -188,7 +192,7 @@ private:
 #define QP_REGISTER_MODULE(module, name, ...)       \
     static queryplan::ModuleFactoryRegister<        \
         module<__VA_ARGS__>, ##__VA_ARGS__>         \
-            module##FactoryRegisterInstance(name)
+            the##module##FactoryRegisterInstance(name)
 
 
 
