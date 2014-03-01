@@ -5,7 +5,7 @@
 # static variable "registry" in getModuleFactoryRegistry().
 
 CXX ?= g++
-CXXFLAGS ?= -std=c++11 -Wall -Wextra
+CXXFLAGS ?= -std=c++11 -Wall -Wextra -Wno-unused-parameter -DBOOST_PP_VARIADICS=1
 CXXFLAGS += -rdynamic
 
 ifdef BOOST_DIR
@@ -22,11 +22,11 @@ main-dbg: queryplan.hpp main.cpp
 		-o main-dbg main.cpp
 
 format:
-	$(CXX) -E $(CXXFLAGS) main.cpp | ./format.pl --only MyModule | astyle | less
+	$(CXX) -E $(CXXFLAGS) main.cpp | ./format.pl --only '\w+Module' | astyle | less
 
 format-dbg:
 	$(CXX) -E $(CXXFLAGS) -DQP_ENABLE_TRACE=1 -DQP_ENABLE_TIMING=1 \
-		main.cpp | ./format.pl --only MyModule | astyle | less
+		main.cpp | ./format.pl --only '\w+Module' | astyle | less
 
 format-dbg:
 

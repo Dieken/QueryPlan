@@ -1,0 +1,52 @@
+[
+{
+    "id"        : "start",
+    "module"    : "StartModule",
+    "outputs"   : {
+        "seed"  : "seed"
+    }
+},
+
+{
+    "id"        : "extra_a",
+    "module"    : "ExtraModule",
+    "inputs"    : {
+        "seed"  : "seed"
+    },
+    "outputs"   : {
+        "result"    : "a"
+    }
+},
+
+{
+    "id"        : "extra_b",
+    "module"    : "ExtraModule",
+    "inputs"    : {
+        "seed"  : "seed"
+    },
+    "outputs"   : {
+        "result"    : "b"
+    }
+},
+
+{
+    "id"        : "add",
+    "module"    : "AddModule",
+    "inputs"    : {
+        "a"     : "a",
+        "b"     : "b"
+    },
+    "outputs"   : {
+        "c2"    : "c"
+    }
+},
+
+{
+    "id"        : "output",
+    "module"    : "OutputModule",
+    "inputs"    : {
+        "result" : "c"
+    }
+}
+]
+

@@ -8,12 +8,16 @@
     -std=gnu++0x --std=gnu++11 -std=gnu++1y
 #endif
 
+
 // XXX: boost-1.55 sets it to 0 for clang compiler
 #ifdef __clang__
-#if defined(BOOST_PP_VARIADICS) && ! BOOST_PP_VARIADICS
-#undef BOOST_PP_VARIADICS
-#define BOOST_PP_VARIADICS 1
-#endif
+    #if defined(BOOST_PP_VARIADICS)
+        #if ! BOOST_PP_VARIADICS
+        #error -DBOOST_PP_VARIADICS=1 is required on command line.
+        #endif
+    #else
+        #define BOOST_PP_VARIADICS  1
+    #endif
 #endif
 
 
@@ -22,6 +26,7 @@
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <typeinfo>
@@ -29,6 +34,7 @@
 #include <vector>
 #include <boost/any.hpp>
 #include <boost/preprocessor.hpp>
+#include <boost/property_tree/ptree.hpp>
 
 
 #define QP_IN       0
@@ -159,6 +165,276 @@ private:
 };
 
 
+template<typename... C>
+class QueryPlanner {
+public:
+    QueryPlanner(const boost::property_tree::ptree& config, C... c) {
+        std::vector<Module*> modules;
+        std::map<std::string, OutputInfo> outputInfos;
+        std::map<Module*, const std::vector<ArgInfo>*> argInfos;
+
+        createModulesAndRecordOutputs(config, modules,
+                outputInfos, argInfos,
+                c...);
+
+        connectInputsOutputs(config, modules,
+                outputInfos, argInfos);
+
+        checkCircularDependency();
+    }
+
+    ~QueryPlanner() {
+        for (auto d : dependencies) {
+            delete d.first;
+        }
+    }
+
+private:
+    struct OutputInfo {
+        Module* module;
+        int index;
+        const ArgInfo& arginfo;
+
+        OutputInfo(Module* m, int i, const ArgInfo& a) :
+            module(m), index(i), arginfo(a) {}
+    };
+
+    void createModulesAndRecordOutputs(
+            const boost::property_tree::ptree& config,
+            std::vector<Module*>& modules,
+            std::map<std::string, OutputInfo>& outputInfos,
+            std::map<Module*, const std::vector<ArgInfo>*>& argInfos,
+            C... c) {
+        for (auto& it : config) {
+            const std::string& id = it.second.get<std::string>("id");
+            auto factory = getModuleFactoryRegistry<C...>().find(
+                    it.second.get<std::string>("module"));
+
+            checkArguments(id, factory->info(), it.second);
+
+            Module* m = factory->create(id, c...);
+            modules.push_back(m);
+            dependencies[m] = std::set<Module*>();
+            argInfos[m] = &factory->info();
+
+            auto outputs = it.second.find("outputs");
+            if (outputs == it.second.not_found()) {
+                continue;
+            }
+
+            for (auto& output : outputs->second) {
+                const std::string& localName = output.first;
+                const std::string& globalName =
+                    output.second.get_value<std::string>();
+
+                auto old = outputInfos.find(globalName);
+                if (old == outputInfos.end()) {
+                    outputInfos.insert(
+                            std::make_pair(globalName,
+                                OutputInfo(m, outputInfos.size(),
+                                    findArgInfo(factory->info(),
+                                        localName))));
+                } else {
+                    std::string msg = "module \"" +
+                        old->second.module->id() +
+                        "\" and module \"" + m->id() +
+                        "\" output to same global name: " +
+                        globalName;
+                    throw std::invalid_argument(msg);
+                }
+            }
+        }
+
+        num_outputs = outputInfos.size();
+    }
+
+    void checkArguments(const std::string& id,
+                        const std::vector<ArgInfo>& info,
+                        const boost::property_tree::ptree& config) {
+        auto inputs = config.find("inputs");
+        auto outputs = config.find("outputs");
+        size_t num_inputs = 0, num_outputs;
+
+        for (auto& ai : info) {
+            if (ai.flag() == QP_IN) {
+                ++num_inputs;
+            }
+        }
+        num_outputs = info.size() - num_inputs;
+
+        if (num_inputs != (inputs == config.not_found() ?
+                    0 : inputs->second.size())) {
+            throw std::invalid_argument("module \"" + id +
+                    "\" has inconsistent inputs between config and code");
+        }
+
+        if (num_outputs != (outputs == config.not_found() ?
+                    0 : outputs->second.size())) {
+            throw std::invalid_argument("module \"" + id +
+                    "\" has inconsistent outputs between config and code");
+        }
+
+        for (auto& ai : info) {
+            auto inouts = ai.flag() == QP_IN ? inputs : outputs;
+
+            if (inouts->second.find(ai.name()) == inouts->second.not_found()) {
+                auto msg = std::string("miss config for argument \"") +
+                    ai.name() + "\" of module \"" + id + '"';
+                throw std::invalid_argument(msg);
+            }
+        }
+    }
+
+    const ArgInfo& findArgInfo(const std::vector<ArgInfo>& info,
+            const std::string& name) {
+        for (auto& ai : info) {
+            if (name == ai.name()) {
+                return ai;
+            }
+        }
+
+        // checkArguments() assures "name" must exists in "info".
+        throw std::logic_error("shouldn't reach here");
+    }
+
+    void connectInputsOutputs(
+            const boost::property_tree::ptree& config,
+            const std::vector<Module*>& modules,
+            const std::map<std::string, OutputInfo>& outputInfos,
+            const std::map<Module*, const std::vector<ArgInfo>*>& argInfos) {
+        int i = 0;
+
+        for (auto& it : config) {
+            const std::string& id = it.second.get<std::string>("id");
+            Module* m = modules[i++];
+            auto inputs = it.second.find("inputs");
+            auto outputs = it.second.find("outputs");
+            std::map<std::string, int> idx;
+
+            if (outputs != it.second.not_found()) {
+                for (auto& output : outputs->second) {
+                    const std::string& localName = output.first;
+                    const std::string& globalName =
+                        output.second.get_value<std::string>();
+
+                    recordLocalNames(outputInfos, idx,
+                            localName, globalName);
+                }
+            }
+
+            if (inputs != it.second.not_found()) {
+                for (auto& input : inputs->second) {
+                    const std::string& localName = input.first;
+                    const std::string& globalName =
+                        input.second.get_value<std::string>();
+
+                    auto oi = outputInfos.find(globalName);
+                    if (oi == outputInfos.end()) {
+                        std::string msg = "input \"" + localName +
+                            "\" of module \"" + id +
+                            "\" has global name \"" + globalName +
+                            "\" that doesn't bind to any known output";
+
+                        throw std::invalid_argument(msg);
+                    }
+
+                    recordLocalNames(outputInfos, idx,
+                            localName, globalName);
+
+                    checkInputOutputType(id, localName,
+                            findArgInfo(*argInfos.at(m), localName),
+                            oi->second.arginfo);
+
+                    Module* upstream = oi->second.module;
+                    if (upstream == m) {
+                        throw std::invalid_argument(
+                                "self dependency found in module \"" +
+                                m->id() + '"');
+                    }
+                    dependencies[upstream].insert(m);
+                }
+            }
+
+            m->resolve(idx);
+        }
+    }
+
+    void recordLocalNames(
+            const std::map<std::string, OutputInfo>& outputInfos,
+            std::map<std::string, int>& idx,
+            const std::string& localName,
+            const std::string& globalName) {
+        if (idx.find(localName) != idx.end()) {
+            // checkArguments() assures unique input/output names.
+            throw std::logic_error("shouldn't reach here");
+        }
+
+        idx[localName] = outputInfos.at(globalName).index;
+    }
+
+    void checkInputOutputType(const std::string& id,
+            const std::string& localName,
+            const ArgInfo& i1, const ArgInfo& i2) {
+        if (i1.typeinfo() != i2.typeinfo()) {
+            std::string msg = "input \"" + localName +
+                "\" of module \"" + id +
+                "\" has different data type with its upstream output:\n" +
+                "    internal type: " +
+                i1.typeinfo().name() + "\n\targ name: " +
+                i1.name() + "\n\targ type: " +
+                i1.type() + '\n' +
+                "    internal type: " +
+                i2.typeinfo().name() + "\n\targ name: " +
+                i2.name() + "\n\targ type: " +
+                i2.type();
+            throw std::invalid_argument(msg);
+        }
+    }
+
+    void checkCircularDependency() {
+        auto deps = dependencies;
+
+        while (! deps.empty()) {
+            bool found = false;
+
+            for (auto it = deps.begin(); it != deps.end(); ++it) {
+                if (it->second.empty()) {
+                    Module* m = it->first;
+                    found = true;
+
+                    for (auto& d : deps) {
+                        d.second.erase(m);
+                    }
+
+                    it = deps.erase(it);
+                    if (it == deps.end()) {
+                        break;
+                    }
+                }
+            }
+
+            if (! found) {
+                std::string msg = "found circular dependency:\n";
+
+                for (auto& it : deps) {
+                    msg += '\t' + it.first->id() + " ->";
+
+                    for (auto d : it.second) {
+                        msg += ' ' + d->id();
+                    }
+
+                    msg += '\n';
+                }
+
+                throw std::invalid_argument(msg);
+            }
+        }
+    }
+
+    int num_outputs;
+    std::map<Module*, std::set<Module*>> dependencies;
+};
+
 
 #define QP_MODULE(module, name, functorType, args, ...)     \
     QP_DEFINE_MODULE(module, functorType, args);            \
@@ -179,11 +455,11 @@ private:
         const std::string& id() const {             \
             return id_;                             \
         }                                           \
-        const functorType& functor()                \
+        functorType& functor()                      \
             const { return func_; }                 \
     private:                                        \
         const std::string id_;                      \
-        const functorType func_;                    \
+        functorType func_;                          \
         QP_DECLARE_INDEXES(args)                    \
     }
 
