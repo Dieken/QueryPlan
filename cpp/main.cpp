@@ -132,7 +132,7 @@ void loadQueryPlan(const char* filename)
 
     ptree pt;
     read_json(filename, pt);
-    queryplan::QueryPlanner<> qp(pt);
+    queryplan::QueryPlan<> qp(pt);
 }
 
 void loadBadQueryPlan(const char* filename)

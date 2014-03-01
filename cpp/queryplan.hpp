@@ -166,9 +166,9 @@ private:
 
 
 template<typename... C>
-class QueryPlanner {
+class QueryPlan {
 public:
-    QueryPlanner(const boost::property_tree::ptree& config, C... c) {
+    QueryPlan(const boost::property_tree::ptree& config, C... c) {
         std::vector<Module*> modules;
         std::map<std::string, OutputInfo> outputInfos;
         std::map<Module*, const std::vector<ArgInfo>*> argInfos;
@@ -183,7 +183,7 @@ public:
         checkCircularDependency();
     }
 
-    ~QueryPlanner() {
+    ~QueryPlan() {
         for (auto d : dependencies) {
             delete d.first;
         }
