@@ -8,8 +8,8 @@ CXX ?= g++
 CXXFLAGS ?= -std=c++11 -Wall -Wextra -Wno-unused-parameter -DBOOST_PP_VARIADICS=1
 CXXFLAGS += -rdynamic
 
-ifdef BOOST_DIR
-	CXXFLAGS += -I$(BOOST_DIR)/include
+ifdef BOOST_INCLUDE
+	CXXFLAGS += -I$(BOOST_INCLUDE)
 endif
 
 all: main main-dbg

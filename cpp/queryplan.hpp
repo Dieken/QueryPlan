@@ -25,14 +25,22 @@
 #include <ctime>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <typeinfo>
 #include <utility>
 #include <vector>
 #include <boost/any.hpp>
+#include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/copy.hpp>
+#include <boost/graph/graph_traits.hpp>
+#include <boost/graph/graphviz.hpp>
+#include <boost/graph/topological_sort.hpp>
 #include <boost/preprocessor.hpp>
 #include <boost/property_tree/ptree.hpp>
 
@@ -80,7 +88,7 @@ public:
 class Module {
 public:
     virtual void resolve(const std::map<std::string, int>& m) = 0;
-    virtual void run(std::vector<boost::any>& v) = 0;
+    virtual void operator()(std::vector<boost::any>& v) = 0;
     virtual const std::string& id() const = 0;
     virtual ~Module() {}
 };
@@ -168,42 +176,90 @@ private:
 template<typename... C>
 class QueryPlan {
 public:
+    typedef boost::adjacency_list<boost::vecS, boost::vecS,
+            boost::bidirectionalS, std::shared_ptr<Module>> Graph;
+
     QueryPlan(const boost::property_tree::ptree& config, C... c) {
-        std::vector<Module*> modules;
+        G dependencies;
         std::map<std::string, OutputInfo> outputInfos;
-        std::map<Module*, const std::vector<ArgInfo>*> argInfos;
+        std::map<G::vertex_descriptor, const std::vector<ArgInfo>*> argInfos;
 
-        createModulesAndRecordOutputs(config, modules,
-                outputInfos, argInfos,
-                c...);
+        createModulesAndRecordOutputs(config, dependencies,
+                outputInfos, argInfos, c...);
 
-        connectInputsOutputs(config, modules,
+        connectInputsOutputs(config, dependencies,
                 outputInfos, argInfos);
 
-        checkCircularDependency();
+        checkCircularDependency(dependencies);
+
+        boost::copy_graph(dependencies, graph);
     }
 
-    ~QueryPlan() {
-        for (auto d : dependencies) {
-            delete d.first;
-        }
+    int numOutputs() {
+        return num_outputs;
+    }
+
+    Graph& dependencies() {
+        return graph;
+    }
+
+    void writeGraphviz(std::ostream& out) {
+        writeGraphviz(out, graph);
     }
 
 private:
+    typedef boost::adjacency_list<boost::setS, boost::vecS,
+            boost::directedS, std::shared_ptr<Module>> G;
+
     struct OutputInfo {
-        Module* module;
+        G::vertex_descriptor module;
         int index;
         const ArgInfo& arginfo;
 
-        OutputInfo(Module* m, int i, const ArgInfo& a) :
+        OutputInfo(G::vertex_descriptor m, int i, const ArgInfo& a) :
             module(m), index(i), arginfo(a) {}
     };
 
+    struct VertexPropertyWriter {
+        const Graph& graph;
+
+        VertexPropertyWriter(const Graph& g) : graph(g) {}
+
+        void operator()(std::ostream& out, const Graph::vertex_descriptor& v) {
+            out << "[label=\"" << graph[v]->id() << "\"]";
+        }
+    };
+
+    template<typename T>
+    static void writeGraphviz(std::ostream& out, const T& graph) {
+#ifdef QP_ENABLE_BOOST_WRITE_GRAPHVIZ
+        // its output isn't easy to grep due to numbered vertex ID.
+        boost::write_graphviz(out, graph, VertexPropertyWriter(graph));
+#else
+
+        out << "digraph G {\n";
+
+        typename boost::graph_traits<T>::vertex_iterator v, v_end;
+        for (std::tie(v, v_end) = boost::vertices(graph); v != v_end; ++v) {
+            out << "  \"" << graph[*v]->id() << "\";\n";
+
+            std::string parent = "\t\t\"" + graph[*v]->id() + "\" -> \"";
+            typename boost::graph_traits<T>::adjacency_iterator a, a_end;
+
+            for (std::tie(a, a_end) = boost::adjacent_vertices(*v, graph); a != a_end; ++a) {
+                out << parent << graph[*a]->id() << "\";\n";
+            }
+        }
+
+        out << "}\n";
+#endif
+    }
+
     void createModulesAndRecordOutputs(
             const boost::property_tree::ptree& config,
-            std::vector<Module*>& modules,
+            G& dependencies,
             std::map<std::string, OutputInfo>& outputInfos,
-            std::map<Module*, const std::vector<ArgInfo>*>& argInfos,
+            std::map<G::vertex_descriptor, const std::vector<ArgInfo>*>& argInfos,
             C... c) {
         for (auto& it : config) {
             const std::string& id = it.second.get<std::string>("id");
@@ -212,9 +268,9 @@ private:
 
             checkArguments(id, factory->info(), it.second);
 
-            Module* m = factory->create(id, c...);
-            modules.push_back(m);
-            dependencies[m] = std::set<Module*>();
+            G::vertex_descriptor m = boost::add_vertex(
+                    std::shared_ptr<Module>(factory->create(id, c...)),
+                    dependencies);
             argInfos[m] = &factory->info();
 
             auto outputs = it.second.find("outputs");
@@ -236,8 +292,8 @@ private:
                                         localName))));
                 } else {
                     std::string msg = "module \"" +
-                        old->second.module->id() +
-                        "\" and module \"" + m->id() +
+                        dependencies[old->second.module]->id() +
+                        "\" and module \"" + dependencies[m]->id() +
                         "\" output to same global name: " +
                         globalName;
                     throw std::invalid_argument(msg);
@@ -299,14 +355,18 @@ private:
 
     void connectInputsOutputs(
             const boost::property_tree::ptree& config,
-            const std::vector<Module*>& modules,
+            G& dependencies,
             const std::map<std::string, OutputInfo>& outputInfos,
-            const std::map<Module*, const std::vector<ArgInfo>*>& argInfos) {
-        int i = 0;
+            const std::map<G::vertex_descriptor, const std::vector<ArgInfo>*>& argInfos) {
+        boost::graph_traits<G>::vertex_iterator v, v_end;
+        std::tie(v, v_end) = boost::vertices(dependencies);
 
         for (auto& it : config) {
             const std::string& id = it.second.get<std::string>("id");
-            Module* m = modules[i++];
+
+            auto m = *v;
+            ++v;
+
             auto inputs = it.second.find("inputs");
             auto outputs = it.second.find("outputs");
             std::map<std::string, int> idx;
@@ -345,17 +405,17 @@ private:
                             findArgInfo(*argInfos.at(m), localName),
                             oi->second.arginfo);
 
-                    Module* upstream = oi->second.module;
+                    auto upstream = oi->second.module;
                     if (upstream == m) {
                         throw std::invalid_argument(
                                 "self dependency found in module \"" +
-                                m->id() + '"');
+                                dependencies[m]->id() + '"');
                     }
-                    dependencies[upstream].insert(m);
+                    boost::add_edge(upstream, m, dependencies);
                 }
             }
 
-            m->resolve(idx);
+            dependencies[m]->resolve(idx);
         }
     }
 
@@ -391,49 +451,48 @@ private:
         }
     }
 
-    void checkCircularDependency() {
-        auto deps = dependencies;
-
-        while (! deps.empty()) {
+    void checkCircularDependency(G deps) {
+        while (boost::num_vertices(deps) > 0) {
             bool found = false;
 
-            for (auto it = deps.begin(); it != deps.end(); ++it) {
-                if (it->second.empty()) {
-                    Module* m = it->first;
+            boost::graph_traits<G>::vertex_iterator v, v_end;
+            for (std::tie(v, v_end) = vertices(deps); v != v_end; ++v) {
+                if (out_degree(*v, deps) == 0) {
                     found = true;
-
-                    for (auto& d : deps) {
-                        d.second.erase(m);
-                    }
-
-                    it = deps.erase(it);
-                    if (it == deps.end()) {
-                        break;
-                    }
+                    clear_vertex(*v, deps);
+                    remove_vertex(*v, deps);
+                    break;
                 }
             }
 
             if (! found) {
-                std::string msg = "found circular dependency:\n";
-
-                for (auto& it : deps) {
-                    msg += '\t' + it.first->id() + " ->";
-
-                    for (auto d : it.second) {
-                        msg += ' ' + d->id();
-                    }
-
-                    msg += '\n';
-                }
-
-                throw std::invalid_argument(msg);
+                std::ostringstream out;
+                out << "found circular dependency:\n";
+                writeGraphviz(out, deps);
+                throw std::invalid_argument(out.str());
             }
         }
     }
 
     int num_outputs;
-    std::map<Module*, std::set<Module*>> dependencies;
+    Graph graph;
 };
+
+
+template<typename... C>
+class SingleThreadBlockedQueryPlanner
+{
+public:
+    SingleThreadBlockedQueryPlanner(
+            const boost::property_tree::ptree& config, C... c) {
+        QueryPlan<C...> plan(config, c...);
+    }
+
+    template<typename... A>
+    void operator()(A... a) {
+    }
+};
+
 
 
 #define QP_MODULE(module, name, functorType, args, ...)     \
@@ -506,7 +565,7 @@ private:
 
 
 #define QP_DECLARE_RUN(module, args)        \
-    void run(std::vector<boost::any>& v) {                          \
+    void operator()(std::vector<boost::any>& v) {                          \
         BOOST_PP_SEQ_FOR_EACH(QP_ASSIGN_VALUE, 0, args)             \
         BOOST_PP_EXPR_IF(                                           \
             QP_ENABLE_TRACE, QP_TRACE(module, args, ">"))           \

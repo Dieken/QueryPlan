@@ -5,7 +5,12 @@
 #include <vector>
 #include <boost/any.hpp>
 #include <boost/property_tree/json_parser.hpp>
+#include <boost/version.hpp>
 #include "queryplan.hpp"
+
+#if !( (BOOST_VERSION / 100000) >= 1 && (BOOST_VERSION / 100 % 1000) >= 50)
+#error "Boost-1.50 or newer is required: https://svn.boost.org/trac/boost/ticket/6785"
+#endif
 
 using namespace std;
 using namespace boost;
@@ -84,13 +89,13 @@ void runModule(queryplan::Module& m)
         const int count = 1000000;
 
         for (int i = 0; i < count; ++i) {
-            m.run(args);
+            m(args);
         }
         auto t1 = clock();
 
         cout << t0 << " " << t1 << " " << 1000000.0 * (t1 - t0) / CLOCKS_PER_SEC / count << "\n";
     } else {
-        m.run(args);
+        m(args);
     }
 
     cout << any_cast<int>(args[0]) << ' ' << any_cast<int>(args[1]) << ' ' << any_cast<int>(args[2]) << "\n";
@@ -133,6 +138,9 @@ void loadQueryPlan(const char* filename)
     ptree pt;
     read_json(filename, pt);
     queryplan::QueryPlan<> qp(pt);
+
+    cout << "numOutputs=" << qp.numOutputs() << endl;
+    qp.writeGraphviz(cout);
 }
 
 void loadBadQueryPlan(const char* filename)
