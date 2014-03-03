@@ -48,28 +48,33 @@ struct Output2 {
 
 QP_MODULE(StartModule, "StartModule", Start,
         ((QP_OUT, int&, seed, 0))
+        , ()
 );
 
 QP_MODULE(ExtraModule, "ExtraModule", Extra,
         ((QP_IN, int, seed))
         ((QP_OUT, int&, result, 0))
+        , ()
 );
 
 QP_MODULE(AddModule, "AddModule", Add,
         ((QP_IN, int, a))
         ((QP_IN, int, b))
         ((QP_OUT, int&, c, 0))
+        , ()
 );
 
 QP_MODULE(OutputModule, "OutputModule", Output,
         ((QP_IN, int, result))
+        , ()
 );
 
 QP_MODULE(Output2Module, "Output2Module", Output2,
         ((QP_IN, long long, result))
+        , ()
 );
 
-void runModule(queryplan::Module& m)
+void runModule(queryplan::Module<>& m)
 {
     map<string, int> keys;
     keys["a"] = 0;
@@ -122,7 +127,7 @@ void testRegisterModule()
 {
     cout << __func__ << ":\n";
 
-    auto factory = queryplan::getModuleFactoryRegistry<>().find("AddModule");
+    auto factory = queryplan::getModuleFactoryRegistry<queryplan::Module<>>().find("AddModule");
     auto m = factory->create("add");
 
     runModule(*m);
@@ -137,7 +142,7 @@ void loadQueryPlan(const char* filename)
 
     ptree pt;
     read_json(filename, pt);
-    queryplan::QueryPlan<> qp(pt);
+    queryplan::QueryPlan<queryplan::Module<>> qp(pt);
 
     cout << "numOutputs=" << qp.numOutputs() << endl;
     qp.writeGraphviz(cout);

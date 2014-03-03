@@ -85,28 +85,29 @@ public:
 };
 
 
+template<typename... A>
 class Module {
 public:
     virtual void resolve(const std::map<std::string, int>& m) = 0;
-    virtual void operator()(std::vector<boost::any>& v) = 0;
+    virtual void operator()(std::vector<boost::any>& v, A... a) = 0;
     virtual const std::string& id() const = 0;
     virtual ~Module() {}
 };
 
 
-template<typename... C>
+template<typename M, typename... C>
 class ModuleFactory {
 public:
-    virtual Module* create(const std::string& id, C... c) const = 0;
+    virtual M* create(const std::string& id, C... c) const = 0;
     virtual const std::vector<ArgInfo>& info() const = 0;
     virtual ~ModuleFactory() {}
 };
 
 
-template<typename ModuleT, typename... C>
-class ConcreteModuleFactory : public ModuleFactory<C...> {
+template<typename ModuleT, typename M, typename... C>
+class ConcreteModuleFactory : public ModuleFactory<M, C...> {
 public:
-    Module* create(const std::string& id, C... c) const {
+    M* create(const std::string& id, C... c) const {
         return new ModuleT(id, c...);
     }
 
@@ -116,10 +117,10 @@ public:
 };
 
 
-template<typename... C>
+template<typename M, typename... C>
 class ModuleFactoryRegistry {
 public:
-    const ModuleFactory<C...>* find(const std::string& name) const {
+    const ModuleFactory<M, C...>* find(const std::string& name) const {
         std::lock_guard<std::mutex> lock(m);
 
         auto it = factories.find(name);
@@ -132,7 +133,7 @@ public:
     }
 
     void insert(const std::string& name,
-                       ModuleFactory<C...>* factory) {
+                       ModuleFactory<M, C...>* factory) {
         std::lock_guard<std::mutex> lock(m);
 
         if (! factories.insert(std::make_pair(name, factory)).second) {
@@ -141,48 +142,48 @@ public:
         }
     }
 
-    std::map<std::string, ModuleFactory<C...>*> all() {
+    std::map<std::string, ModuleFactory<M, C...>*> all() {
         std::lock_guard<std::mutex> lock(m);
 
-        return std::map<std::string, ModuleFactory<C...>*>(factories);
+        return std::map<std::string, ModuleFactory<M, C...>*>(factories);
     }
 
 private:
-    std::map<std::string, ModuleFactory<C...>*> factories;
+    std::map<std::string, ModuleFactory<M, C...>*> factories;
     mutable std::mutex m;       // C++11 doesn't have shared_mutex
 };
 
 
-template<typename... C>
-ModuleFactoryRegistry<C...>& getModuleFactoryRegistry() {
-    static ModuleFactoryRegistry<C...> registry;
+template<typename M, typename... C>
+ModuleFactoryRegistry<M, C...>& getModuleFactoryRegistry() {
+    static ModuleFactoryRegistry<M, C...> registry;
 
     return registry;
 }
 
 
-template<typename ModuleT, typename... C>
+template<typename ModuleT, typename M, typename... C>
 class ModuleFactoryRegister {
 public:
     ModuleFactoryRegister(const std::string& name) {
-        getModuleFactoryRegistry<C...>().insert(name, &factory);
+        getModuleFactoryRegistry<M, C...>().insert(name, &factory);
     }
 
 private:
-    ConcreteModuleFactory<ModuleT, C...> factory;
+    ConcreteModuleFactory<ModuleT, M, C...> factory;
 };
 
 
-template<typename... C>
+template<typename M, typename... C>
 class QueryPlan {
 public:
     typedef boost::adjacency_list<boost::vecS, boost::vecS,
-            boost::bidirectionalS, std::shared_ptr<Module>> Graph;
+            boost::bidirectionalS, std::shared_ptr<M>> Graph;
 
     QueryPlan(const boost::property_tree::ptree& config, C... c) {
         G dependencies;
         std::map<std::string, OutputInfo> outputInfos;
-        std::map<G::vertex_descriptor, const std::vector<ArgInfo>*> argInfos;
+        std::map<Vertex, const std::vector<ArgInfo>*> argInfos;
 
         createModulesAndRecordOutputs(config, dependencies,
                 outputInfos, argInfos, c...);
@@ -209,14 +210,15 @@ public:
 
 private:
     typedef boost::adjacency_list<boost::setS, boost::vecS,
-            boost::directedS, std::shared_ptr<Module>> G;
+            boost::directedS, std::shared_ptr<M>> G;
+    typedef typename G::vertex_descriptor Vertex;
 
     struct OutputInfo {
-        G::vertex_descriptor module;
+        Vertex module;
         int index;
         const ArgInfo& arginfo;
 
-        OutputInfo(G::vertex_descriptor m, int i, const ArgInfo& a) :
+        OutputInfo(Vertex m, int i, const ArgInfo& a) :
             module(m), index(i), arginfo(a) {}
     };
 
@@ -225,7 +227,8 @@ private:
 
         VertexPropertyWriter(const Graph& g) : graph(g) {}
 
-        void operator()(std::ostream& out, const Graph::vertex_descriptor& v) {
+        void operator()(std::ostream& out,
+                        const typename Graph::vertex_descriptor& v) {
             out << "[label=\"" << graph[v]->id() << "\"]";
         }
     };
@@ -259,17 +262,17 @@ private:
             const boost::property_tree::ptree& config,
             G& dependencies,
             std::map<std::string, OutputInfo>& outputInfos,
-            std::map<G::vertex_descriptor, const std::vector<ArgInfo>*>& argInfos,
+            std::map<Vertex, const std::vector<ArgInfo>*>& argInfos,
             C... c) {
         for (auto& it : config) {
             const std::string& id = it.second.get<std::string>("id");
-            auto factory = getModuleFactoryRegistry<C...>().find(
+            auto factory = getModuleFactoryRegistry<M, C...>().find(
                     it.second.get<std::string>("module"));
 
             checkArguments(id, factory->info(), it.second);
 
-            G::vertex_descriptor m = boost::add_vertex(
-                    std::shared_ptr<Module>(factory->create(id, c...)),
+            Vertex m = boost::add_vertex(
+                    std::shared_ptr<M>(factory->create(id, c...)),
                     dependencies);
             argInfos[m] = &factory->info();
 
@@ -357,8 +360,8 @@ private:
             const boost::property_tree::ptree& config,
             G& dependencies,
             const std::map<std::string, OutputInfo>& outputInfos,
-            const std::map<G::vertex_descriptor, const std::vector<ArgInfo>*>& argInfos) {
-        boost::graph_traits<G>::vertex_iterator v, v_end;
+            const std::map<Vertex, const std::vector<ArgInfo>*>& argInfos) {
+        typename boost::graph_traits<G>::vertex_iterator v, v_end;
         std::tie(v, v_end) = boost::vertices(dependencies);
 
         for (auto& it : config) {
@@ -455,7 +458,7 @@ private:
         while (boost::num_vertices(deps) > 0) {
             bool found = false;
 
-            boost::graph_traits<G>::vertex_iterator v, v_end;
+            typename boost::graph_traits<G>::vertex_iterator v, v_end;
             for (std::tie(v, v_end) = vertices(deps); v != v_end; ++v) {
                 if (out_degree(*v, deps) == 0) {
                     found = true;
@@ -479,13 +482,13 @@ private:
 };
 
 
-template<typename... C>
+template<typename M, typename... C>
 class SingleThreadBlockedQueryPlanner
 {
 public:
     SingleThreadBlockedQueryPlanner(
             const boost::property_tree::ptree& config, C... c) {
-        QueryPlan<C...> plan(config, c...);
+        QueryPlan<M, C...> plan(config, c...);
     }
 
     template<typename... A>
@@ -495,39 +498,45 @@ public:
 
 
 
-#define QP_MODULE(module, name, functorType, args, ...)     \
+#define QP_MODULE(module, name, functorType, args,          \
+                  extra_args, ...)                          \
     QP_DEFINE_MODULE(module, functorType, args);            \
-    QP_REGISTER_MODULE(module, name, ##__VA_ARGS__)
+    QP_REGISTER_MODULE(module, name, extra_args, ##__VA_ARGS__)
 
 
 
-#define QP_DEFINE_MODULE(module, functorType, args) \
-    template<typename... C>                         \
-    class module : public queryplan::Module {       \
-    public:                                         \
-        module(const std::string& id,               \
-             C... c) :                              \
-            id_(id), func_(c...) {}                 \
-        QP_DECLARE_RESOLVE(args)                    \
-        QP_DECLARE_RUN(module, args)                \
-        QP_DECLARE_MODULE_INFO(args)                \
-        const std::string& id() const {             \
-            return id_;                             \
-        }                                           \
-        functorType& functor()                      \
-            const { return func_; }                 \
-    private:                                        \
-        const std::string id_;                      \
-        functorType func_;                          \
-        QP_DECLARE_INDEXES(args)                    \
+#define QP_DEFINE_MODULE(module, functorType, args)         \
+    template<typename... A>                                 \
+    class module : public queryplan::Module<A...> {         \
+    public:                                                 \
+        template<typename... C>                             \
+        module(const std::string& id,                       \
+             C... c) :                                      \
+            id_(id), func_(c...) {}                         \
+        QP_DECLARE_RESOLVE(args)                            \
+        QP_DECLARE_RUN(module, args)                        \
+        QP_DECLARE_MODULE_INFO(args)                        \
+        const std::string& id() const {                     \
+            return id_;                                     \
+        }                                                   \
+        functorType& functor()                              \
+            const { return func_; }                         \
+    private:                                                \
+        const std::string id_;                              \
+        functorType func_;                                  \
+        QP_DECLARE_INDEXES(args)                            \
     }
 
 
 
-#define QP_REGISTER_MODULE(module, name, ...)       \
-    static queryplan::ModuleFactoryRegister<        \
-        module<__VA_ARGS__>, ##__VA_ARGS__>         \
+#define QP_REGISTER_MODULE(module, name, extra_args, ...)   \
+    static queryplan::ModuleFactoryRegister<                \
+        module<QP_STRIP_PAREN extra_args>,                  \
+        queryplan::Module<QP_STRIP_PAREN extra_args>,       \
+        ##__VA_ARGS__>                                      \
             the##module##FactoryRegisterInstance(name)
+
+#define QP_STRIP_PAREN(...) __VA_ARGS__
 
 
 
@@ -565,14 +574,15 @@ public:
 
 
 #define QP_DECLARE_RUN(module, args)        \
-    void operator()(std::vector<boost::any>& v) {                          \
+    void operator()(std::vector<boost::any>& v, A... a) {           \
         BOOST_PP_SEQ_FOR_EACH(QP_ASSIGN_VALUE, 0, args)             \
         BOOST_PP_EXPR_IF(                                           \
             QP_ENABLE_TRACE, QP_TRACE(module, args, ">"))           \
         BOOST_PP_EXPR_IF(                                           \
             QP_ENABLE_TIMING, QP_BEGIN_TIMING())                    \
         func_(BOOST_PP_SEQ_ENUM(                                    \
-            BOOST_PP_SEQ_TRANSFORM(QP_TRANS_TYPE_NAME, 0, args)));  \
+            BOOST_PP_SEQ_TRANSFORM(QP_TRANS_TYPE_NAME, 0, args)),   \
+              a...);                                                \
         BOOST_PP_EXPR_IF(                                           \
             QP_ENABLE_TIMING, QP_END_TIMING(module))                \
         BOOST_PP_EXPR_IF(                                           \
