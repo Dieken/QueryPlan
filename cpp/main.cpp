@@ -142,6 +142,7 @@ void loadQueryPlan(const char* filename)
 
     ptree pt;
     read_json(filename, pt);
+
     queryplan::QueryPlan<queryplan::Module<>> qp(pt);
 
     cout << "numOutputs=" << qp.numOutputs() << endl;
@@ -156,6 +157,19 @@ void loadBadQueryPlan(const char* filename)
     } catch (std::exception& e) {
         cout << e.what() << endl;
     }
+}
+
+void testSingleThreadBlockedQueryPlanner(const char* filename)
+{
+    cout << "load query plan: " << filename << endl;
+
+    ptree pt;
+    read_json(filename, pt);
+
+    queryplan::SingleThreadBlockedQueryPlanner<queryplan::Module<>>
+        planner(pt);
+
+    planner();
 }
 
 int main(int argc, char** argv)
@@ -200,6 +214,9 @@ int main(int argc, char** argv)
 
     cout << "\n";
     loadBadQueryPlan("t/qp-circular-dep.json");
+
+    cout << "\n";
+    testSingleThreadBlockedQueryPlanner("t/qp-example.json");
 
     return 0;
 }

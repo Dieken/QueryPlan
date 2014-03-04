@@ -489,11 +489,35 @@ public:
     SingleThreadBlockedQueryPlanner(
             const boost::property_tree::ptree& config, C... c) {
         QueryPlan<M, C...> plan(config, c...);
+
+        num_outputs = plan.numOutputs();
+        G& g = plan.dependencies();
+
+        std::vector<Vertex> v;
+        boost::topological_sort(g, std::back_inserter(v));
+
+        modules.reserve(v.size());
+
+        for (auto it = v.rbegin(); it != v.rend(); ++it) {
+            modules.push_back(g[*it]);
+        }
     }
 
     template<typename... A>
     void operator()(A... a) {
+        std::vector<boost::any> v(num_outputs);
+
+        for (auto& m : modules) {
+            (*m)(v, a...);
+        }
     }
+
+private:
+    typedef typename QueryPlan<M, C...>::Graph G;
+    typedef typename G::vertex_descriptor Vertex;
+
+    int num_outputs;
+    std::vector<std::shared_ptr<M>> modules;
 };
 
 
