@@ -21,6 +21,7 @@
 #endif
 
 
+#include <atomic>
 #include <chrono>
 #include <ctime>
 #include <iostream>
@@ -43,6 +44,7 @@
 #include <boost/graph/topological_sort.hpp>
 #include <boost/preprocessor.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <boost/signals2.hpp>
 
 
 #define QP_IN       0
@@ -85,11 +87,15 @@ public:
 };
 
 
+typedef std::vector<boost::any> Context;
+typedef std::shared_ptr<std::vector<boost::any>> ContextPtr;
+
+
 template<typename... A>
 class Module {
 public:
     virtual void resolve(const std::map<std::string, int>& m) = 0;
-    virtual void operator()(std::vector<boost::any>& v, A... a) = 0;
+    virtual void operator()(ContextPtr ctx, A... a) = 0;
     virtual const std::string& id() const = 0;
     virtual ~Module() {}
 };
@@ -505,10 +511,10 @@ public:
 
     template<typename... A>
     void operator()(A... a) {
-        std::vector<boost::any> v(num_outputs);
+        auto ctx = std::make_shared<Context>(num_outputs);
 
         for (auto& m : modules) {
-            (*m)(v, a...);
+            (*m)(ctx, a...);
         }
     }
 
@@ -518,6 +524,95 @@ private:
 
     int num_outputs;
     std::vector<std::shared_ptr<M>> modules;
+};
+
+
+template<typename M, typename... C>
+class SignalBasedSingleThreadBlockedQueryPlanner
+{
+public:
+    SignalBasedSingleThreadBlockedQueryPlanner(
+            const boost::property_tree::ptree& config, C... c) :
+                plan(config, c...) {
+    }
+
+    template<typename... A>
+    void operator()(A... a) {
+        ContextPtr ctx = std::make_shared<Context>(plan.numOutputs());
+
+        auto& g = plan.dependencies();
+        boost::signals2::signal<void(ContextPtr, A...)> sig;
+        std::map<Vertex, std::shared_ptr<Signal<A...>>> signals;
+
+        for (auto it = boost::vertices(g); it.first != it.second; ++it.first) {
+            signals[*it.first] = std::make_shared<Signal<A...>>(
+                    g[*it.first], boost::in_degree(*it.first, g));
+        }
+
+        for (auto it = boost::vertices(g); it.first != it.second; ++it.first) {
+            Slot<A...> slot(signals[*it.first]);
+
+            if (boost::in_degree(*it.first, g) > 0) {
+                for (auto it2 = boost::inv_adjacent_vertices(*it.first, g);
+                        it2.first != it2.second; ++it2.first) {
+                    signals[*it2.first]->connect(slot);
+                }
+            } else {
+                sig.connect(slot);
+            }
+        }
+
+        sig(ctx, a...);
+    }
+
+private:
+    typedef typename QueryPlan<M, C...>::Graph G;
+    typedef typename G::vertex_descriptor Vertex;
+
+    template<typename... A> class Slot;
+
+    template<typename... A>
+    class Signal {
+    public:
+        Signal(std::shared_ptr<M> m, int i) : module(m), in_degree(i) {}
+
+        void operator()(ContextPtr ctx, A... a) {
+            if (--in_degree <= 0) {
+                try {
+                    (*module)(ctx, a...);
+                } catch (...) {
+                    sig(ctx, a...);
+                    throw;
+                }
+
+                sig(ctx, a...);
+            }
+        }
+
+        void connect(const Slot<A...>& slot) {
+            sig.connect(slot);
+        }
+
+    private:
+        std::shared_ptr<M> module;
+        std::atomic_int in_degree;
+        boost::signals2::signal<void(ContextPtr, A...)> sig;
+    };
+
+    template<typename... A>
+    class Slot {
+    public:
+        Slot(std::shared_ptr<Signal<A...>> sig_) : sig(sig_) {}
+
+        void operator()(ContextPtr ctx, A... a) {
+            (*sig)(ctx, a...);
+        }
+
+    private:
+        std::shared_ptr<Signal<A...>> sig;
+    };
+
+    QueryPlan<M, C...> plan;
 };
 
 
@@ -598,7 +693,7 @@ private:
 
 
 #define QP_DECLARE_RUN(module, args)        \
-    void operator()(std::vector<boost::any>& v, A... a) {           \
+    void operator()(queryplan::ContextPtr ctx, A... a) {            \
         BOOST_PP_SEQ_FOR_EACH(QP_ASSIGN_VALUE, 0, args)             \
         BOOST_PP_EXPR_IF(                                           \
             QP_ENABLE_TRACE, QP_TRACE(module, args, ">"))           \
@@ -614,8 +709,8 @@ private:
     }
 
 #define QP_ASSIGN_VALUE(r, data, arg)       \
-    boost::any& QP_ANY_NAME(arg) = v.at(QP_INDEX_NAME(arg));    \
-    BOOST_PP_EXPR_IF(BOOST_PP_EQUAL(QP_ARG_FLAG(arg), QP_OUT),  \
+    boost::any& QP_ANY_NAME(arg) = ctx->at(QP_INDEX_NAME(arg));     \
+    BOOST_PP_EXPR_IF(BOOST_PP_EQUAL(QP_ARG_FLAG(arg), QP_OUT),      \
             QP_ANY_NAME(arg) = QP_ARG_VALUE(arg);)
 
 #define QP_TRANS_TYPE_NAME(s, data, arg)    \

@@ -2,6 +2,7 @@
 #include <ctime>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <vector>
 #include <boost/any.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -82,12 +83,13 @@ void runModule(queryplan::Module<>& m)
     keys["c"] = 2;
 
     m.resolve(keys);
-    vector<any> args;
-    args.push_back(5);
-    args.push_back(7);
-    args.push_back(0);
 
-    cout << any_cast<int>(args[0]) << ' ' << any_cast<int>(args[1]) << ' ' << any_cast<int>(args[2]) << "\n";
+    auto args = std::make_shared<queryplan::Context>();
+    args->push_back(5);
+    args->push_back(7);
+    args->push_back(0);
+
+    cout << any_cast<int>((*args)[0]) << ' ' << any_cast<int>((*args)[1]) << ' ' << any_cast<int>((*args)[2]) << "\n";
 
     if (0) {
         auto t0 = clock();
@@ -103,7 +105,7 @@ void runModule(queryplan::Module<>& m)
         m(args);
     }
 
-    cout << any_cast<int>(args[0]) << ' ' << any_cast<int>(args[1]) << ' ' << any_cast<int>(args[2]) << "\n";
+    cout << any_cast<int>((*args)[0]) << ' ' << any_cast<int>((*args)[1]) << ' ' << any_cast<int>((*args)[2]) << "\n";
 }
 
 void dumpModuleInfo(const vector<queryplan::ArgInfo>& v)
@@ -161,12 +163,25 @@ void loadBadQueryPlan(const char* filename)
 
 void testSingleThreadBlockedQueryPlanner(const char* filename)
 {
-    cout << "load query plan: " << filename << endl;
+    cout << __func__ << ": load query plan " << filename << endl;
 
     ptree pt;
     read_json(filename, pt);
 
     queryplan::SingleThreadBlockedQueryPlanner<queryplan::Module<>>
+        planner(pt);
+
+    planner();
+}
+
+void testSignalBasedSingleThreadBlockedQueryPlanner(const char* filename)
+{
+    cout << __func__ << ": load query plan " << filename << endl;
+
+    ptree pt;
+    read_json(filename, pt);
+
+    queryplan::SignalBasedSingleThreadBlockedQueryPlanner<queryplan::Module<>>
         planner(pt);
 
     planner();
@@ -217,6 +232,9 @@ int main(int argc, char** argv)
 
     cout << "\n";
     testSingleThreadBlockedQueryPlanner("t/qp-example.json");
+
+    cout << "\n";
+    testSignalBasedSingleThreadBlockedQueryPlanner("t/qp-example.json");
 
     return 0;
 }
