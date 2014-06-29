@@ -110,15 +110,15 @@ public:
 };
 
 
-template<typename ModuleT, typename M, typename... C>
-class ConcreteModuleFactory : public ModuleFactory<M, C...> {
+template<typename M, typename... C>
+class ConcreteModuleFactory : public ModuleFactory<typename M::Base, C...> {
 public:
-    M* create(const std::string& id, C... c) const {
-        return new ModuleT(id, c...);
+    typename M::Base* create(const std::string& id, C... c) const {
+        return new M(id, c...);
     }
 
     const std::vector<ArgInfo>& info() const {
-        return ModuleT::info();
+        return M::info();
     }
 };
 
@@ -168,15 +168,15 @@ ModuleFactoryRegistry<M, C...>& getModuleFactoryRegistry() {
 }
 
 
-template<typename ModuleT, typename M, typename... C>
+template<typename M, typename... C>
 class ModuleFactoryRegister {
 public:
     ModuleFactoryRegister(const std::string& name) {
-        getModuleFactoryRegistry<M, C...>().insert(name, &factory);
+        getModuleFactoryRegistry<typename M::Base, C...>().insert(name, &factory);
     }
 
 private:
-    ConcreteModuleFactory<ModuleT, M, C...> factory;
+    ConcreteModuleFactory<M, C...> factory;
 };
 
 
@@ -628,6 +628,7 @@ private:
     template<typename... A>                                 \
     class module : public queryplan::Module<A...> {         \
     public:                                                 \
+        typedef typename queryplan::Module<A...> Base;      \
         template<typename... C>                             \
         module(const std::string& id,                       \
              C... c) :                                      \
@@ -651,7 +652,6 @@ private:
 #define QP_REGISTER_MODULE(module, name, extra_args, ...)   \
     static queryplan::ModuleFactoryRegister<                \
         module<QP_STRIP_PAREN extra_args>,                  \
-        queryplan::Module<QP_STRIP_PAREN extra_args>,       \
         ##__VA_ARGS__>                                      \
             the##module##FactoryRegisterInstance(name)
 
