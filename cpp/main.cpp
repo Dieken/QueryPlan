@@ -47,6 +47,27 @@ struct Output2 {
     }
 };
 
+class DoSomething {
+public:
+    DoSomething(const ptree& config) : extra(0) {}
+
+    void operator()(int a, int b, int& c, ostream& out) {
+        c = a + b + extra;
+        out << "a=" << a << " b=" << b << " c=" << c << "\n";
+    }
+
+private:
+    int extra;
+};
+
+QP_MODULE(DoSomethingModule, "DoSomethingModule", DoSomething,
+        ((QP_IN, int, a))
+        ((QP_IN, int, b))
+        ((QP_OUT, int&, c, 0))
+        , (ostream&),
+        const ptree&
+);
+
 QP_MODULE(StartModule, "StartModule", Start,
         ((QP_OUT, int&, seed, 0))
         , ()
